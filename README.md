@@ -37,12 +37,22 @@ plan). Pages and reliable 10-minute Actions both work best on a public repo, so:
 
 ---
 
-## Status: one piece needs finalizing
+## How the check works
 
-`checker.py` contains a function `check_domain()` written for the *most likely*
-request format of the Orion checker. The exact field name and the
-blocked/not-blocked wording must be confirmed from the site's Network tab
-(see the comments marked `>>>` in `checker.py`). Once tuned, it's done.
+`check_domain()` queries the **Orion TrustPositif checker**
+(`https://trustcheck.orion.net.id/`, POST field `keyword`). Orion runs from
+inside Indonesia and mirrors the official Komdigi/TrustPositif blocklist.
+
+- Orion returns a table of every domain that *contains* the keyword, each marked
+  `Terblokir`. We match the **exact** queried domain row, so a safe domain is not
+  misreported just because a blocked look-alike exists (e.g. `porngoogle.com`
+  being blocked does not flag `google.com`).
+- The official `trustpositif.komdigi.go.id` site is IP-locked to Indonesia and is
+  **unreachable from GitHub's runners** (verified) — it exposes no API callable
+  from outside Indonesia. Orion is therefore the reliable free path, and every
+  report links to the official site for manual verification.
+- If Orion is unreachable, that domain is reported as ⚠️ (error) rather than
+  guessed.
 
 ---
 
