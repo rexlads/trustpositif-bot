@@ -10,6 +10,31 @@ report to your Telegram channel. Each report links back to the official site
 
 ---
 
+## Web panel — manage your domains without touching code
+
+A self-contained control panel lives at `docs/index.html`. From it you can:
+- add / remove the domains you want to monitor,
+- save the list straight to `domains.txt` in this repo (one commit per save),
+- press **Cek Sekarang** to run the check immediately,
+- see the status of the last few runs.
+
+### Enable the panel (free, on GitHub Pages)
+
+GitHub Pages is free **for public repositories** (private repos need a paid
+plan). Pages and reliable 10-minute Actions both work best on a public repo, so:
+
+1. **Make the repo public** *(recommended)*: repo → **Settings → General →
+   Danger Zone → Change visibility → Public**. Your bot token stays safe — it
+   lives in GitHub Secrets, not in the code. Only `domains.txt` becomes visible.
+2. **Turn on Pages:** repo → **Settings → Pages → Build and deployment → Source:
+   Deploy from a branch → Branch: `main` / folder: `/docs` → Save.**
+3. Open the URL Pages gives you (e.g. `https://rexlads.github.io/trustpositif-bot/`).
+4. In the panel, create a **fine-grained token** (the panel explains how) with
+   **Contents: Read/write** and **Actions: Read/write** for this repo, paste it,
+   and you're in. The token is stored only in your browser.
+
+---
+
 ## Status: one piece needs finalizing
 
 `checker.py` contains a function `check_domain()` written for the *most likely*
@@ -21,24 +46,31 @@ blocked/not-blocked wording must be confirmed from the site's Network tab
 
 ## Option 1 — GitHub Actions (recommended: free, no server)
 
-1. **Create a new GitHub repo** (private is fine). Upload all these files,
-   keeping the `.github/workflows/check.yml` path intact.
+1. **Upload these files** to your repo, keeping the
+   `.github/workflows/check.yml` path intact. **Public repo is recommended**
+   (free unlimited Actions + free Pages for the panel).
 
 2. **Add your secrets:** repo → **Settings → Secrets and variables → Actions →
-   New repository secret**. Add three:
+   New repository secret**. Add two:
    - `BOT_TOKEN`  → your fresh token from BotFather
    - `CHANNEL_ID` → `-1004473967915`
-   - `DOMAINS`    → your 20 domains, comma-separated, e.g. `a.com,b.com,c.com`
+
+   > `DOMAINS` is **no longer required** — the domain list now lives in
+   > `domains.txt` (edited via the panel). You can still set `DOMAINS` as an
+   > optional fallback if `domains.txt` is empty.
 
 3. **Make sure the bot can post:** add your bot to the channel as an
    **administrator** with "Post messages" permission.
 
 4. **Set the interval:** edit the `cron` line in `.github/workflows/check.yml`.
    Default is every 10 minutes. (GitHub's minimum is ~5 min and scheduled runs
-   can be delayed a few minutes under load — normal for free cron.)
+   can be delayed a few minutes under load — normal for free cron. On a
+   **private** repo, every 10 min will exhaust the free Actions quota, which is
+   why a public repo is recommended.)
 
-5. **Test now:** repo → **Actions** tab → "TrustPositif Check" → **Run workflow**.
-   Watch the log; you should get Telegram messages within a minute.
+5. **Test now:** repo → **Actions** tab → "TrustPositif Check" → **Run workflow**
+   (or press **Cek Sekarang** in the panel). You should get Telegram messages
+   within a minute.
 
 **Toggle / pause:** Actions tab → the workflow → **⋯ → Disable workflow**.
 **Change frequency:** edit the cron line and commit.

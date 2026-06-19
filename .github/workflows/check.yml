@@ -15,7 +15,16 @@ name: TrustPositif Check
 on:
   schedule:
     - cron: "*/10 * * * *"
-  workflow_dispatch: {}      # lets you trigger manually from the Actions tab
+  workflow_dispatch: {}      # lets you trigger manually (and from the web panel)
+
+# Never let two runs overlap; if a new one starts, cancel the older one.
+concurrency:
+  group: trustpositif-check
+  cancel-in-progress: false
+
+# The web panel triggers this workflow via the API, so the token only needs read.
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -37,6 +46,8 @@ jobs:
         env:
           BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID:   ${{ secrets.CHANNEL_ID }}
+          # Domains now come from domains.txt (edited via the web panel).
+          # DOMAINS stays here only as an optional fallback if the file is empty.
           DOMAINS:      ${{ secrets.DOMAINS }}
           BATCH_SIZE:   "5"
           ONLY_BLOCKED: "0"
