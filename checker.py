@@ -28,6 +28,7 @@ Domain source (in priority order):
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -123,67 +124,77 @@ def validate_config() -> dict:
         fail("BOT_TOKEN is not set.")
     if not CHANNEL_ID:
         fail("CHANNEL_ID is not set.")
-    groups = load_groups()
-    if not any(groups.values()):
-        fail("No domains found. Add some via the panel (domains.json) or set DOMAINS.")
-    return groups
+    return load_groups()
 
 
 # ============================================================================
-# >>> THE ONE PART THAT NEEDS THE NETWORK-TAB DETAILS YOU'LL SEND ME <<<
+# Domain check engine
 # ----------------------------------------------------------------------------
-# Replace the body of check_domain() once you give me the request format from
-# the browser's Network tab. Right now it is written for the MOST LIKELY shape
-# (a POST with a single field) and includes clear notes on what to adjust.
+# We query the Orion TrustPositif checker (https://trustcheck.orion.net.id/),
+# which runs from inside Indonesia and reflects the official Komdigi/TrustPositif
+# blocklist. The official komdigi.go.id site itself is IP-locked to Indonesia and
+# is unreachable from GitHub's runners (verified), so it has no API we can call
+# from here — Orion is the reliable free path; the official URL is included in
+# every report for manual verification.
 #
-# What I need from you to finalize this function:
-#   1. The exact request URL          -> set CHECK_URL below
-#   2. GET or POST                     -> adjust the requests call
-#   3. The form field name             -> e.g. "keyword" / "domain" / "ip"
-#   4. What the response says when a
-#      domain IS vs IS NOT blocked     -> adjust the detection logic
+# IMPORTANT — how Orion responds (confirmed against live responses):
+#   * POST field name is "keyword".
+#   * The result is a table of EVERY domain that *contains* the keyword as a
+#     substring, each marked "Terblokir" (blocked). E.g. keyword "google.com"
+#     returns "porngoogle.com Terblokir", "cumgoogle.com Terblokir", ... but
+#     NOT "google.com" itself (google.com is not blocked).
+#   * Therefore we must match the EXACT queried domain row, never a substring,
+#     or safe domains would be misreported because a blocked look-alike exists.
 # ============================================================================
 
-CHECK_URL = "https://trustcheck.orion.net.id/"          # (1) confirm this
-FORM_FIELD = "keyword"                                   # (3) confirm this name
+CHECK_URL = "https://trustcheck.orion.net.id/"
+FORM_FIELD = "keyword"
 
-# (4) Words that appear in the response when a domain is BLOCKED / NOT blocked.
-#     We will tune these once you paste a real response. These are reasonable
-#     defaults based on how these tools usually phrase results.
-BLOCKED_MARKERS     = ["diblokir", "blocked", "terblokir", "blokir", "ada", "found"]
-NOT_BLOCKED_MARKERS = ["tidak diblokir", "not blocked", "tidak terblokir",
-                       "aman", "normal", "tidak ada", "not found", "available"]
+# Captures the domain/IP token that immediately precedes a "Terblokir" status
+# cell in the result table.
+_ROW_RE = re.compile(r"([A-Za-z0-9_.:\-]+)\s+Terblokir", re.IGNORECASE)
+_TAG_RE = re.compile(r"(?s)<[^>]+>")
+
+
+def _visible_text(html_text: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html_text)
+    text = _TAG_RE.sub(" ", text)
+    text = text.replace("&nbsp;", " ")
+    return re.sub(r"\s+", " ", text)
+
+
+def _norm(d: str) -> str:
+    return d.strip().lower().rstrip(".")
 
 
 def check_domain(domain: str) -> dict:
     """
-    Returns: {"domain": str, "status": "blocked"|"safe"|"unknown"|"error",
-              "detail": str}
+    Query Orion and decide blocked/safe by exact-match on the result rows.
+
+    Returns: {"domain": str, "status": "blocked"|"safe"|"error", "detail": str}
     """
+    target = _norm(domain)
     try:
-        resp = requests.post(                         # (2) change to .get if needed
+        resp = requests.post(
             CHECK_URL,
-            data={FORM_FIELD: domain},                # (3) field name
+            data={FORM_FIELD: domain},
             headers=HEADERS,
             timeout=25,
         )
         resp.raise_for_status()
-        text = resp.text.lower()
-
-        # NOT-blocked is checked first because "tidak diblokir" contains "diblokir".
-        if any(m in text for m in NOT_BLOCKED_MARKERS):
-            return {"domain": domain, "status": "safe",
-                    "detail": "Not on the blocklist"}
-        if any(m in text for m in BLOCKED_MARKERS):
-            return {"domain": domain, "status": "blocked",
-                    "detail": "Appears on the blocklist"}
-        return {"domain": domain, "status": "unknown",
-                "detail": "Could not parse result (markers need tuning)"}
-
     except requests.exceptions.Timeout:
-        return {"domain": domain, "status": "error", "detail": "Timeout"}
+        return {"domain": domain, "status": "error", "detail": "Timeout (Orion)"}
     except requests.exceptions.RequestException as e:
-        return {"domain": domain, "status": "error", "detail": str(e)[:120]}
+        return {"domain": domain, "status": "error", "detail": f"Orion: {str(e)[:100]}"}
+
+    text = _visible_text(resp.text)
+    blocked_rows = {_norm(m) for m in _ROW_RE.findall(text)}
+
+    if target in blocked_rows:
+        return {"domain": domain, "status": "blocked",
+                "detail": "Diblokir TrustPositif/Komdigi"}
+    return {"domain": domain, "status": "safe",
+            "detail": "Tidak diblokir"}
 
 
 # ----------------------------------------------------------------------------
@@ -230,6 +241,7 @@ def build_group_message(group: str, results: list) -> str:
     issues = sum(1 for r in results if r["status"] in ("error", "unknown"))
     lines.append("")
     lines.append(f"🔴 {blocked}  🟢 {safe}  ⚠️ {issues}")
+    lines.append(f"<a href=\"{OFFICIAL_URL}\">Verifikasi manual</a>")
     return "\n".join(lines)
 
 
@@ -239,6 +251,9 @@ def build_group_message(group: str, results: list) -> str:
 def main() -> None:
     groups = validate_config()
     total = sum(len(v) for v in groups.values())
+    if total == 0:
+        print("No domains configured yet — add some via the panel. Nothing to do.")
+        return
     print(f"Checking {total} domains across {len(groups)} groups...")
 
     for group, domains in groups.items():
