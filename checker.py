@@ -17,14 +17,19 @@ Config comes from environment variables (never hard-code secrets):
   BATCH_SIZE   -> how many domains per Telegram message (default 5)
   ONLY_BLOCKED -> "1" to report only blocked domains, "0" for full report (default 0)
 
-Domain list source (in priority order):
-  1. domains.txt next to this file (one domain per line, "#" comments allowed).
+Domains are organised into groups (Ary, AS, BD, SV). One Telegram message is
+sent per group, so each group's result lands as its own message.
+
+Domain source (in priority order):
+  1. domains.json next to this file: {"Ary": [...], "AS": [...], ...}.
      This is what the web panel edits, so it is the default source of truth.
-  2. The DOMAINS environment variable (comma-separated) as a fallback.
+  2. domains.txt (one domain per line) — treated as a single group "Domain".
+  3. The DOMAINS environment variable (comma-separated) — single group "Domain".
 """
 
 import os
 import sys
+import json
 import time
 import html
 import requests
@@ -36,11 +41,14 @@ from pathlib import Path
 BOT_TOKEN    = os.environ.get("BOT_TOKEN", "").strip()
 CHANNEL_ID   = os.environ.get("CHANNEL_ID", "").strip()
 DOMAINS_RAW  = os.environ.get("DOMAINS", "").strip()
-BATCH_SIZE   = int(os.environ.get("BATCH_SIZE", "5"))
 ONLY_BLOCKED = os.environ.get("ONLY_BLOCKED", "0").strip() == "1"
 
-# The web panel edits this file, so it is the primary source of domains.
-DOMAINS_FILE = Path(__file__).with_name("domains.txt")
+# The web panel edits domains.json, so it is the primary source of domains.
+GROUPS_FILE  = Path(__file__).with_name("domains.json")
+DOMAINS_FILE = Path(__file__).with_name("domains.txt")  # legacy fallback
+
+# Fixed group order so the four Telegram messages always arrive consistently.
+GROUP_ORDER = ["Ary", "AS", "BD", "SV"]
 
 OFFICIAL_URL = "https://trustpositif.komdigi.go.id/"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -64,44 +72,61 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def load_domains() -> list:
-    """
-    Returns the de-duplicated domain list, reading domains.txt first and
-    falling back to the DOMAINS env var. Blank lines and lines starting with
-    "#" in domains.txt are ignored.
-    """
-    raw_items = []
+def _clean(items) -> list:
+    """Lowercase, strip, drop empties, keep order, de-duplicate."""
+    seen = set()
+    out = []
+    for item in items:
+        d = str(item).strip().lower()
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
 
+
+def _legacy_domains() -> list:
+    """Read domains.txt, then the DOMAINS env var, as a flat list."""
+    raw = []
     if DOMAINS_FILE.exists():
         for line in DOMAINS_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                # Allow comma-separated entries on a single line too.
-                raw_items.extend(line.split(","))
-
-    if not raw_items and DOMAINS_RAW:
-        raw_items = DOMAINS_RAW.split(",")
-
-    # Normalise: lowercase, strip, drop empties, keep order, de-duplicate.
-    seen = set()
-    domains = []
-    for item in raw_items:
-        d = item.strip().lower()
-        if d and d not in seen:
-            seen.add(d)
-            domains.append(d)
-    return domains
+                raw.extend(line.split(","))
+    if not raw and DOMAINS_RAW:
+        raw = DOMAINS_RAW.split(",")
+    return _clean(raw)
 
 
-def validate_config() -> list:
+def load_groups() -> dict:
+    """
+    Returns an ordered dict {group_name: [domains]}.
+    Reads domains.json first; falls back to a single "Domain" group built from
+    domains.txt / the DOMAINS env var.
+    """
+    if GROUPS_FILE.exists():
+        try:
+            data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            fail(f"domains.json is not valid JSON: {e}")
+        groups = {}
+        # Keep the fixed order first, then any extra groups the user added.
+        for name in GROUP_ORDER + [k for k in data if k not in GROUP_ORDER]:
+            if name in data:
+                groups[name] = _clean(data[name] or [])
+        return groups
+
+    return {"Domain": _legacy_domains()}
+
+
+def validate_config() -> dict:
     if not BOT_TOKEN:
         fail("BOT_TOKEN is not set.")
     if not CHANNEL_ID:
         fail("CHANNEL_ID is not set.")
-    domains = load_domains()
-    if not domains:
-        fail("No domains found. Add some to domains.txt or set the DOMAINS env var.")
-    return domains
+    groups = load_groups()
+    if not any(groups.values()):
+        fail("No domains found. Add some via the panel (domains.json) or set DOMAINS.")
+    return groups
 
 
 # ============================================================================
@@ -185,13 +210,26 @@ def send_telegram(message: str) -> None:
         print(f"[Telegram send failed] {e}", file=sys.stderr)
 
 
-def build_batch_message(batch_results: list, part: int, total_parts: int) -> str:
-    lines = [f"<b>TrustPositif Check — Part {part}/{total_parts}</b>", ""]
-    for r in batch_results:
+def build_group_message(group: str, results: list) -> str:
+    """One Telegram message for a single group."""
+    head = html.escape(group)
+    lines = [f"<b>🛡️ TrustPositif — {head}</b>", ""]
+
+    if not results:
+        lines.append("<i>Belum ada domain di grup ini.</i>")
+        return "\n".join(lines)
+
+    for r in results:
         icon = ICON.get(r["status"], "⚪")
         dom = html.escape(r["domain"])
         det = html.escape(r["detail"])
         lines.append(f"{icon} <code>{dom}</code> — {det}")
+
+    blocked = sum(1 for r in results if r["status"] == "blocked")
+    safe = sum(1 for r in results if r["status"] == "safe")
+    issues = sum(1 for r in results if r["status"] in ("error", "unknown"))
+    lines.append("")
+    lines.append(f"🔴 {blocked}  🟢 {safe}  ⚠️ {issues}")
     return "\n".join(lines)
 
 
@@ -199,42 +237,29 @@ def build_batch_message(batch_results: list, part: int, total_parts: int) -> str
 # Main
 # ----------------------------------------------------------------------------
 def main() -> None:
-    domains = validate_config()
-    print(f"Checking {len(domains)} domains, batch size {BATCH_SIZE}...")
+    groups = validate_config()
+    total = sum(len(v) for v in groups.values())
+    print(f"Checking {total} domains across {len(groups)} groups...")
 
-    results = []
-    for d in domains:
-        res = check_domain(d)
-        results.append(res)
-        print(f"  {res['status']:8} {d} — {res['detail']}")
-        time.sleep(DELAY_BETWEEN_CHECKS)
+    for group, domains in groups.items():
+        results = []
+        for d in domains:
+            res = check_domain(d)
+            results.append(res)
+            print(f"  [{group}] {res['status']:8} {d} — {res['detail']}")
+            time.sleep(DELAY_BETWEEN_CHECKS)
 
-    if ONLY_BLOCKED:
-        reportable = [r for r in results if r["status"] in ("blocked", "error", "unknown")]
-        if not reportable:
-            print("ONLY_BLOCKED=1 and nothing blocked — sending a short all-clear.")
-            send_telegram("🟢 <b>TrustPositif Check</b>\nAll monitored domains are clear.")
-            return
-        results = reportable
+        if ONLY_BLOCKED:
+            results = [r for r in results if r["status"] in ("blocked", "error", "unknown")]
+            if not results:
+                send_telegram(f"<b>🛡️ TrustPositif — {html.escape(group)}</b>\n🟢 Semua aman.")
+                time.sleep(1)
+                continue
 
-    # Split into batches and send one message per batch.
-    batches = [results[i:i + BATCH_SIZE] for i in range(0, len(results), BATCH_SIZE)]
-    total_parts = len(batches)
-    for idx, batch in enumerate(batches, start=1):
-        msg = build_batch_message(batch, idx, total_parts)
-        send_telegram(msg)
+        # One message per group (always 4 with the default groups).
+        send_telegram(build_group_message(group, results))
         time.sleep(1)  # avoid Telegram rate limits
 
-    # Summary footer with the official link for manual verification.
-    blocked = sum(1 for r in results if r["status"] == "blocked")
-    summary = (
-        f"<b>Summary</b>\n"
-        f"🔴 Blocked: {blocked}   "
-        f"🟢 Safe: {sum(1 for r in results if r['status']=='safe')}   "
-        f"⚠️ Issues: {sum(1 for r in results if r['status'] in ('error','unknown'))}\n\n"
-        f"Verify manually at {OFFICIAL_URL}"
-    )
-    send_telegram(summary)
     print("Done.")
 
 
