@@ -1,0 +1,43 @@
+name: TrustPositif Check
+
+# ---------------------------------------------------------------------------
+# This is your SCHEDULE / TOGGLE.
+#  - Change the cron line to adjust the interval.
+#  - To pause the bot: GitHub repo -> Actions tab -> this workflow -> "..." -> Disable.
+#  - To run it right now: Actions tab -> this workflow -> "Run workflow".
+#
+# Cron is in UTC. Examples:
+#   "*/10 * * * *"  -> every 10 minutes   (note: GitHub min is ~5 min and may lag)
+#   "*/30 * * * *"  -> every 30 minutes
+#   "0 * * * *"     -> every hour, on the hour
+#   "0 */3 * * *"   -> every 3 hours
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}      # lets you trigger manually from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run checker
+        env:
+          BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID:   ${{ secrets.CHANNEL_ID }}
+          DOMAINS:      ${{ secrets.DOMAINS }}
+          BATCH_SIZE:   "5"
+          ONLY_BLOCKED: "0"
+        run: python checker.py
