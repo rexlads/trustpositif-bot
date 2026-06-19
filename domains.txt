@@ -1,0 +1,5 @@
+# Daftar domain yang dipantau TrustPositif Checker.
+# - Satu domain per baris.
+# - Baris yang diawali "#" dan baris kosong diabaikan.
+# - Bisa diedit lewat panel web (docs/index.html) atau langsung di sini.
+example.com

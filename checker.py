@@ -12,9 +12,15 @@ Run once per invocation. Scheduling is handled externally:
 Config comes from environment variables (never hard-code secrets):
   BOT_TOKEN    -> from @BotFather   (REQUIRED)
   CHANNEL_ID   -> e.g. -1004473967915 (REQUIRED)
-  DOMAINS      -> comma-separated list, e.g. "a.com,b.com" (REQUIRED)
+  DOMAINS      -> comma-separated list, e.g. "a.com,b.com"
+                  (OPTIONAL fallback; the primary source is domains.txt)
   BATCH_SIZE   -> how many domains per Telegram message (default 5)
   ONLY_BLOCKED -> "1" to report only blocked domains, "0" for full report (default 0)
+
+Domain list source (in priority order):
+  1. domains.txt next to this file (one domain per line, "#" comments allowed).
+     This is what the web panel edits, so it is the default source of truth.
+  2. The DOMAINS environment variable (comma-separated) as a fallback.
 """
 
 import os
@@ -22,6 +28,7 @@ import sys
 import time
 import html
 import requests
+from pathlib import Path
 
 # ----------------------------------------------------------------------------
 # Config
@@ -31,6 +38,9 @@ CHANNEL_ID   = os.environ.get("CHANNEL_ID", "").strip()
 DOMAINS_RAW  = os.environ.get("DOMAINS", "").strip()
 BATCH_SIZE   = int(os.environ.get("BATCH_SIZE", "5"))
 ONLY_BLOCKED = os.environ.get("ONLY_BLOCKED", "0").strip() == "1"
+
+# The web panel edits this file, so it is the primary source of domains.
+DOMAINS_FILE = Path(__file__).with_name("domains.txt")
 
 OFFICIAL_URL = "https://trustpositif.komdigi.go.id/"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -54,16 +64,43 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def load_domains() -> list:
+    """
+    Returns the de-duplicated domain list, reading domains.txt first and
+    falling back to the DOMAINS env var. Blank lines and lines starting with
+    "#" in domains.txt are ignored.
+    """
+    raw_items = []
+
+    if DOMAINS_FILE.exists():
+        for line in DOMAINS_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                # Allow comma-separated entries on a single line too.
+                raw_items.extend(line.split(","))
+
+    if not raw_items and DOMAINS_RAW:
+        raw_items = DOMAINS_RAW.split(",")
+
+    # Normalise: lowercase, strip, drop empties, keep order, de-duplicate.
+    seen = set()
+    domains = []
+    for item in raw_items:
+        d = item.strip().lower()
+        if d and d not in seen:
+            seen.add(d)
+            domains.append(d)
+    return domains
+
+
 def validate_config() -> list:
     if not BOT_TOKEN:
         fail("BOT_TOKEN is not set.")
     if not CHANNEL_ID:
         fail("CHANNEL_ID is not set.")
-    if not DOMAINS_RAW:
-        fail("DOMAINS is not set (comma-separated list).")
-    domains = [d.strip().lower() for d in DOMAINS_RAW.split(",") if d.strip()]
+    domains = load_domains()
     if not domains:
-        fail("DOMAINS parsed to an empty list.")
+        fail("No domains found. Add some to domains.txt or set the DOMAINS env var.")
     return domains
 
 
