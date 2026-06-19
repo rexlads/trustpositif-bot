@@ -15,7 +15,7 @@
     margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     background: var(--bg); color: var(--text); line-height: 1.5;
   }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
   h1 { font-size: 1.5rem; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 24px; font-size: .9rem; }
   .card {
@@ -43,15 +43,33 @@
   button.danger { background: var(--red); }
   button.green { background: var(--green); }
   .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
-  ul.domains { list-style: none; padding: 0; margin: 4px 0 0; }
+
+  /* 4 kolom grup */
+  .groups { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 620px) { .groups { grid-template-columns: 1fr; } }
+  .group {
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: #0f172a;
+  }
+  .group h3 {
+    margin: 0 0 10px; font-size: 1rem; display: flex; align-items: center; gap: 8px;
+  }
+  .group h3 .count {
+    font-size: .72rem; color: var(--muted); font-weight: 400;
+    border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px;
+  }
+  ul.domains { list-style: none; padding: 0; margin: 0 0 10px; min-height: 8px; }
   ul.domains li {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
-    margin-bottom: 6px; background: #0f172a; font-family: ui-monospace, monospace;
-    font-size: .9rem;
+    padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+    margin-bottom: 6px; background: var(--card); font-family: ui-monospace, monospace;
+    font-size: .85rem; word-break: break-all;
   }
-  ul.domains li button { padding: 4px 10px; font-size: .8rem; }
-  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  ul.domains li button { padding: 3px 9px; font-size: .75rem; }
+  .empty { color: var(--muted); font-style: italic; font-size: .8rem; padding: 4px 0; }
+  .addrow { display: flex; gap: 6px; }
+  .addrow input { font-size: .85rem; padding: 8px 10px; }
+  .addrow button { padding: 8px 12px; font-size: .82rem; }
+
   #status { margin-top: 12px; font-size: .88rem; min-height: 1.2em; }
   .ok { color: var(--green); } .err { color: var(--red); } .info { color: var(--muted); }
   details { margin-top: 8px; }
@@ -67,18 +85,19 @@
 <body>
 <div class="wrap">
   <h1>🛡️ Panel TrustPositif Checker</h1>
-  <p class="sub">Atur daftar domain & jalankan pengecekan tanpa menyentuh kode.</p>
+  <p class="sub">Atur domain per grup & jalankan pengecekan tanpa menyentuh kode.
+    Tiap pengecekan mengirim <b>satu pesan Telegram per grup</b>.</p>
 
   <!-- ===== Koneksi ===== -->
   <div class="card">
     <h2>1. Koneksi GitHub</h2>
     <div class="row">
       <div style="flex:1">
-        <label for="owner">Owner / Repo</label>
+        <label for="owner">Owner</label>
         <input type="text" id="owner" placeholder="rexlads" />
       </div>
       <div style="flex:1">
-        <label for="repo">&nbsp;</label>
+        <label for="repo">Repo</label>
         <input type="text" id="repo" placeholder="trustpositif-bot" />
       </div>
     </div>
@@ -102,14 +121,10 @@
     </div>
   </div>
 
-  <!-- ===== Domain ===== -->
+  <!-- ===== Grup Domain ===== -->
   <div class="card">
-    <h2>2. Daftar Domain</h2>
-    <div class="row">
-      <input type="text" id="newDomain" placeholder="contoh.com" onkeydown="if(event.key==='Enter')addDomain()" />
-      <button onclick="addDomain()">+ Tambah</button>
-    </div>
-    <ul class="domains" id="list"><li class="empty">Belum dimuat…</li></ul>
+    <h2>2. Daftar Domain per Grup</h2>
+    <div class="groups" id="groups"></div>
     <div class="btns">
       <button class="ghost" onclick="loadDomains()">↻ Muat ulang</button>
       <button class="green" id="saveBtn" onclick="saveDomains()">💾 Simpan ke GitHub</button>
@@ -134,10 +149,11 @@
 <script>
 const API = "https://api.github.com";
 const WORKFLOW = "check.yml";       // nama file workflow di .github/workflows
-const FILE = "domains.txt";
+const FILE = "domains.json";
 const BRANCH = "main";
-let fileSha = null;                 // sha file domains.txt saat ini (untuk update)
-let domains = [];
+const GROUPS = ["Ary", "AS", "BD", "SV"];   // urutan & nama grup (juga urutan pesan Telegram)
+let fileSha = null;                 // sha file domains.json saat ini (untuk update)
+let data = {};                      // { grup: [domain, ...] }
 
 // ---------- util ----------
 const $ = (id) => document.getElementById(id);
@@ -159,6 +175,7 @@ function headers() {
 // base64 <-> UTF-8 aman
 function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
 function b64decode(b64) { return decodeURIComponent(escape(atob(b64))); }
+function emptyData() { const o = {}; GROUPS.forEach(g => o[g] = []); return o; }
 
 // ---------- config persistence ----------
 function saveConfig() {
@@ -168,7 +185,7 @@ function saveConfig() {
   localStorage.setItem("tp_repo", c.repo);
   if (c.token) localStorage.setItem("tp_token", c.token);
   setStatus("Tersimpan. Memuat domain…", "ok");
-  loadDomains();
+  loadDomains(); loadRuns();
 }
 function clearToken() {
   localStorage.removeItem("tp_token");
@@ -181,55 +198,94 @@ function restoreConfig() {
   $("token").value = localStorage.getItem("tp_token") || "";
 }
 
-// ---------- domains ----------
-function renderList() {
-  const ul = $("list");
-  if (!domains.length) { ul.innerHTML = '<li class="empty">Belum ada domain. Tambahkan di atas.</li>'; return; }
-  ul.innerHTML = "";
-  domains.forEach((d, i) => {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = d;
-    const btn = document.createElement("button");
-    btn.className = "danger"; btn.textContent = "Hapus";
-    btn.onclick = () => { domains.splice(i, 1); renderList(); };
-    li.append(span, btn);
-    ul.appendChild(li);
+// ---------- render grup ----------
+function render() {
+  const box = $("groups");
+  box.innerHTML = "";
+  GROUPS.forEach(g => {
+    const list = data[g] || [];
+    const card = document.createElement("div");
+    card.className = "group";
+
+    const h = document.createElement("h3");
+    h.innerHTML = `📁 ${g} <span class="count">${list.length}</span>`;
+    card.appendChild(h);
+
+    const ul = document.createElement("ul");
+    ul.className = "domains";
+    if (!list.length) {
+      ul.innerHTML = '<li class="empty">Belum ada domain.</li>';
+    } else {
+      list.forEach((d, i) => {
+        const li = document.createElement("li");
+        const span = document.createElement("span");
+        span.textContent = d;
+        const btn = document.createElement("button");
+        btn.className = "danger"; btn.textContent = "✕";
+        btn.onclick = () => { data[g].splice(i, 1); render(); };
+        li.append(span, btn);
+        ul.appendChild(li);
+      });
+    }
+    card.appendChild(ul);
+
+    const addrow = document.createElement("div");
+    addrow.className = "addrow";
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.placeholder = "contoh.com";
+    inp.onkeydown = (e) => { if (e.key === "Enter") { addDomain(g, inp); } };
+    const add = document.createElement("button");
+    add.textContent = "+ Tambah";
+    add.onclick = () => addDomain(g, inp);
+    addrow.append(inp, add);
+    card.appendChild(addrow);
+
+    box.appendChild(card);
   });
 }
-function addDomain() {
-  let d = $("newDomain").value.trim().toLowerCase();
+
+function addDomain(group, input) {
+  let d = input.value.trim().toLowerCase();
   if (!d) return;
-  d = d.replace(/^https?:\/\//, "").replace(/\/.*$/, "");  // bersihkan url
-  if (domains.includes(d)) { setStatus(`"${d}" sudah ada.`, "info"); return; }
-  domains.push(d);
-  $("newDomain").value = "";
-  renderList();
-  setStatus(`Ditambahkan "${d}". Jangan lupa Simpan ke GitHub.`, "info");
+  d = d.replace(/^https?:\/\//, "").replace(/\/.*$/, "");   // bersihkan url
+  if (!data[group]) data[group] = [];
+  if (data[group].includes(d)) { setStatus(`"${d}" sudah ada di grup ${group}.`, "info"); return; }
+  data[group].push(d);
+  input.value = "";
+  render();
+  setStatus(`Ditambahkan "${d}" ke ${group}. Jangan lupa Simpan ke GitHub.`, "info");
 }
 
+// ---------- load / save ----------
 async function loadDomains() {
   const c = cfg();
   if (!c.token) { setStatus("Masukkan token GitHub dulu.", "err"); return; }
-  setStatus("Memuat domains.txt…", "info");
+  setStatus("Memuat domains.json…", "info");
   try {
     const r = await fetch(`${API}/repos/${c.owner}/${c.repo}/contents/${FILE}?ref=${BRANCH}`, { headers: headers() });
     if (r.status === 404) {
-      fileSha = null; domains = []; renderList();
-      setStatus("domains.txt belum ada — akan dibuat saat kamu Simpan.", "info");
+      fileSha = null; data = emptyData(); render();
+      setStatus("domains.json belum ada — akan dibuat saat kamu Simpan.", "info");
       return;
     }
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-    const data = await r.json();
-    fileSha = data.sha;
-    const text = b64decode(data.content);
-    domains = text.split("\n").map(l => l.trim())
-                  .filter(l => l && !l.startsWith("#"))
-                  .flatMap(l => l.split(",").map(x => x.trim().toLowerCase()))
-                  .filter(Boolean);
-    domains = [...new Set(domains)];
-    renderList();
-    setStatus(`Dimuat ${domains.length} domain.`, "ok");
+    const j = await r.json();
+    fileSha = j.sha;
+    let parsed = {};
+    try { parsed = JSON.parse(b64decode(j.content)) || {}; } catch (e) { parsed = {}; }
+    data = emptyData();
+    // muat grup yang dikenal + bersihkan/dedup
+    Object.keys(parsed).forEach(g => {
+      if (!data[g]) data[g] = [];
+      const seen = new Set();
+      (parsed[g] || []).forEach(x => {
+        const d = String(x).trim().toLowerCase();
+        if (d && !seen.has(d)) { seen.add(d); data[g].push(d); }
+      });
+    });
+    render();
+    const total = GROUPS.reduce((n, g) => n + (data[g] ? data[g].length : 0), 0);
+    setStatus(`Dimuat ${total} domain dari ${GROUPS.length} grup.`, "ok");
   } catch (e) { setStatus("Gagal memuat: " + e.message, "err"); }
 }
 
@@ -238,19 +294,21 @@ async function saveDomains() {
   if (!c.token) { setStatus("Masukkan token GitHub dulu.", "err"); return; }
   $("saveBtn").disabled = true;
   setStatus("Menyimpan…", "info");
-  const header = "# Daftar domain dipantau TrustPositif Checker (dikelola lewat panel).\n"
-               + "# Satu domain per baris.\n";
-  const content = header + domains.join("\n") + "\n";
+  // susun objek rapi sesuai urutan grup
+  const out = {};
+  GROUPS.forEach(g => out[g] = data[g] || []);
+  const content = JSON.stringify(out, null, 2) + "\n";
   try {
-    const body = { message: "panel: update domains.txt", content: b64encode(content), branch: BRANCH };
+    const body = { message: "panel: update domains.json", content: b64encode(content), branch: BRANCH };
     if (fileSha) body.sha = fileSha;
     const r = await fetch(`${API}/repos/${c.owner}/${c.repo}/contents/${FILE}`, {
       method: "PUT", headers: headers(), body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-    const data = await r.json();
-    fileSha = data.content.sha;
-    setStatus(`✓ Tersimpan ${domains.length} domain. Run berikutnya pakai daftar ini.`, "ok");
+    const j = await r.json();
+    fileSha = j.content.sha;
+    const total = GROUPS.reduce((n, g) => n + out[g].length, 0);
+    setStatus(`✓ Tersimpan ${total} domain. Run berikutnya pakai daftar ini.`, "ok");
   } catch (e) { setStatus("Gagal menyimpan: " + e.message, "err"); }
   finally { $("saveBtn").disabled = false; }
 }
@@ -265,7 +323,7 @@ async function runNow() {
       method: "POST", headers: headers(), body: JSON.stringify({ ref: BRANCH }),
     });
     if (r.status === 204) {
-      setStatus("✓ Pengecekan dijalankan. Cek Telegram sebentar lagi.", "ok");
+      setStatus("✓ Pengecekan dijalankan. Cek Telegram sebentar lagi (1 pesan per grup).", "ok");
       setTimeout(loadRuns, 3000);
     } else { throw new Error(`${r.status} ${await r.text()}`); }
   } catch (e) { setStatus("Gagal menjalankan: " + e.message, "err"); }
@@ -277,10 +335,10 @@ async function loadRuns() {
   try {
     const r = await fetch(`${API}/repos/${c.owner}/${c.repo}/actions/workflows/${WORKFLOW}/runs?per_page=5`, { headers: headers() });
     if (!r.ok) throw new Error(`${r.status}`);
-    const data = await r.json();
+    const j = await r.json();
     const box = $("runs"); box.innerHTML = "";
-    if (!data.workflow_runs || !data.workflow_runs.length) { box.innerHTML = '<div class="empty">Belum ada run.</div>'; return; }
-    data.workflow_runs.forEach(run => {
+    if (!j.workflow_runs || !j.workflow_runs.length) { box.innerHTML = '<div class="empty">Belum ada run.</div>'; return; }
+    j.workflow_runs.forEach(run => {
       const color = run.conclusion === "success" ? "var(--green)"
                   : run.conclusion === "failure" ? "var(--red)"
                   : "var(--yellow)";
@@ -296,6 +354,8 @@ async function loadRuns() {
 
 // ---------- init ----------
 restoreConfig();
+data = emptyData();
+render();
 if (cfg().token) { loadDomains(); loadRuns(); }
 </script>
 </body>

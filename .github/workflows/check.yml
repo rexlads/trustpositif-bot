@@ -46,9 +46,8 @@ jobs:
         env:
           BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID:   ${{ secrets.CHANNEL_ID }}
-          # Domains now come from domains.txt (edited via the web panel).
+          # Domains now come from domains.json (edited via the web panel).
           # DOMAINS stays here only as an optional fallback if the file is empty.
           DOMAINS:      ${{ secrets.DOMAINS }}
-          BATCH_SIZE:   "5"
           ONLY_BLOCKED: "0"
         run: python checker.py

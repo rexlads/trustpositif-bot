@@ -1,9 +1,9 @@
 # TrustPositif Domain Checker → Telegram
 
-Checks a list of domains against the Indonesian TrustPositif / Komdigi blocklist
-(via a third-party checker that reflects the official list) and posts a batched
-report to your Telegram channel. Each report links back to the official site
-(https://trustpositif.komdigi.go.id/) so you can verify anything flagged.
+Checks domains against the Indonesian TrustPositif / Komdigi blocklist (via a
+third-party checker that reflects the official list) and posts the results to
+your Telegram channel. Domains are organised into **groups** (`Ary`, `AS`,
+`BD`, `SV`) and the bot sends **one Telegram message per group**.
 
 > ⚠️ **Before you do anything:** if you ever pasted your bot token anywhere public
 > (chat, screenshot, repo), open Telegram → @BotFather → `/revoke` → get a NEW token.
@@ -13,10 +13,12 @@ report to your Telegram channel. Each report links back to the official site
 ## Web panel — manage your domains without touching code
 
 A self-contained control panel lives at `docs/index.html`. From it you can:
-- add / remove the domains you want to monitor,
-- save the list straight to `domains.txt` in this repo (one commit per save),
+- add / remove domains in each of the four groups (`Ary`, `AS`, `BD`, `SV`),
+- save the lists straight to `domains.json` in this repo (one commit per save),
 - press **Cek Sekarang** to run the check immediately,
 - see the status of the last few runs.
+
+The bot sends one Telegram message per group, so you get four separate reports.
 
 ### Enable the panel (free, on GitHub Pages)
 
@@ -25,7 +27,7 @@ plan). Pages and reliable 10-minute Actions both work best on a public repo, so:
 
 1. **Make the repo public** *(recommended)*: repo → **Settings → General →
    Danger Zone → Change visibility → Public**. Your bot token stays safe — it
-   lives in GitHub Secrets, not in the code. Only `domains.txt` becomes visible.
+   lives in GitHub Secrets, not in the code. Only `domains.json` becomes visible.
 2. **Turn on Pages:** repo → **Settings → Pages → Build and deployment → Source:
    Deploy from a branch → Branch: `main` / folder: `/docs` → Save.**
 3. Open the URL Pages gives you (e.g. `https://rexlads.github.io/trustpositif-bot/`).
@@ -56,8 +58,8 @@ blocked/not-blocked wording must be confirmed from the site's Network tab
    - `CHANNEL_ID` → `-1004473967915`
 
    > `DOMAINS` is **no longer required** — the domain list now lives in
-   > `domains.txt` (edited via the panel). You can still set `DOMAINS` as an
-   > optional fallback if `domains.txt` is empty.
+   > `domains.json` (edited via the panel). You can still set `DOMAINS` as an
+   > optional fallback if `domains.json` is missing.
 
 3. **Make sure the bot can post:** add your bot to the channel as an
    **administrator** with "Post messages" permission.
@@ -104,19 +106,19 @@ python checker.py
 
 ## Report format
 
+One message is sent per group (`Ary`, `AS`, `BD`, `SV`):
+
 ```
-TrustPositif Check — Part 1/4
+🛡️ TrustPositif — Ary
 🔴 baddomain.com — Appears on the blocklist
 🟢 gooddomain.com — Not on the blocklist
-...
-Summary
-🔴 Blocked: 2   🟢 Safe: 17   ⚠️ Issues: 1
-Verify manually at https://trustpositif.komdigi.go.id/
+
+🔴 1  🟢 1  ⚠️ 0
 ```
 
-- `BATCH_SIZE` controls domains per message (default 5 → 20 domains = 4 parts).
-- `ONLY_BLOCKED=1` reports only blocked/problem domains plus a short all-clear
-  when everything is fine.
+- Domains and their groups are stored in `domains.json` and edited via the panel.
+- `ONLY_BLOCKED=1` reports only blocked/problem domains; a group with nothing to
+  report sends a short "Semua aman" message instead.
 
 ---
 
