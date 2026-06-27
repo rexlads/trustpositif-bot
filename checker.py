@@ -130,28 +130,26 @@ def validate_config() -> dict:
 # ============================================================================
 # Domain check engine
 # ----------------------------------------------------------------------------
-# We query the Orion TrustPositif checker (https://trustcheck.orion.net.id/),
-# which runs from inside Indonesia and reflects the official Komdigi/TrustPositif
-# blocklist. The official komdigi.go.id site itself is IP-locked to Indonesia and
-# is unreachable from GitHub's runners (verified), so it has no API we can call
-# from here — Orion is the reliable free path; the official URL is included in
-# every report for manual verification.
+# PRIMARY source — the Skiddle blocklist mirror. It is a verbatim mirror of the
+# official Komdigi/TrustPositif domain list (~9M entries), auto-updated hourly,
+# served from GitHub's CDN so it is reachable from anywhere (the official
+# komdigi.go.id site is IP-locked to Indonesia and unusable from GitHub runners).
+# Verified: results match the official site exactly (e.g. supervegas01.live).
+# We download the list once per run and test exact membership.
 #
-# IMPORTANT — how Orion responds (confirmed against live responses):
-#   * POST field name is "keyword".
-#   * The result is a table of EVERY domain that *contains* the keyword as a
-#     substring, each marked "Terblokir" (blocked). E.g. keyword "google.com"
-#     returns "porngoogle.com Terblokir", "cumgoogle.com Terblokir", ... but
-#     NOT "google.com" itself (google.com is not blocked).
-#   * Therefore we must match the EXACT queried domain row, never a substring,
-#     or safe domains would be misreported because a blocked look-alike exists.
+# FALLBACK — if the blocklist can't be downloaded, we fall back to the Orion
+# checker (https://trustcheck.orion.net.id/) per domain. Orion's data can lag,
+# so it is only a safety net.
 # ============================================================================
 
+# domains_001.txt, domains_002.txt, ... We probe upward and stop at the first
+# missing file, so new shards are picked up automatically.
+BLOCKLIST_URL = "https://raw.githubusercontent.com/Skiddle-ID/blocklist/main/domains_{:03d}.txt"
+BLOCKLIST_MAX_FILES = 20
+
+# Orion fallback config
 CHECK_URL = "https://trustcheck.orion.net.id/"
 FORM_FIELD = "keyword"
-
-# Captures the domain/IP token that immediately precedes a "Terblokir" status
-# cell in the result table.
 _ROW_RE = re.compile(r"([A-Za-z0-9_.:\-]+)\s+Terblokir", re.IGNORECASE)
 _TAG_RE = re.compile(r"(?s)<[^>]+>")
 
@@ -167,34 +165,59 @@ def _norm(d: str) -> str:
     return d.strip().lower().rstrip(".")
 
 
-def check_domain(domain: str) -> dict:
+def fetch_blocked(targets: set) -> set:
     """
-    Query Orion and decide blocked/safe by exact-match on the result rows.
+    Stream the Skiddle blocklist shards and return the subset of `targets`
+    (already normalised) that appear in the official blocklist.
+    Raises RuntimeError if not a single shard could be downloaded.
+    """
+    found = set()
+    remaining = set(targets)
+    downloaded = 0
+    for i in range(1, BLOCKLIST_MAX_FILES + 1):
+        if not remaining:
+            break  # every target already matched
+        url = BLOCKLIST_URL.format(i)
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=60, stream=True)
+        except requests.exceptions.RequestException as e:
+            print(f"[blocklist] shard {i} error: {str(e)[:80]}", file=sys.stderr)
+            break
+        if resp.status_code == 404:
+            break  # no more shards
+        if resp.status_code != 200:
+            print(f"[blocklist] shard {i} HTTP {resp.status_code}", file=sys.stderr)
+            break
+        downloaded += 1
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw:
+                continue
+            d = _norm(raw)
+            if d in remaining:
+                found.add(d)
+                remaining.discard(d)
+                if not remaining:
+                    break
+    if downloaded == 0:
+        raise RuntimeError("could not download any blocklist shard")
+    print(f"[blocklist] scanned {downloaded} shard(s); "
+          f"{len(found)}/{len(targets)} domains blocked")
+    return found
 
-    Returns: {"domain": str, "status": "blocked"|"safe"|"error", "detail": str}
-    """
+
+def check_domain_orion(domain: str) -> dict:
+    """Fallback: query Orion and decide by exact-match on the result rows."""
     target = _norm(domain)
     try:
-        resp = requests.post(
-            CHECK_URL,
-            data={FORM_FIELD: domain},
-            headers=HEADERS,
-            timeout=25,
-        )
+        resp = requests.post(CHECK_URL, data={FORM_FIELD: domain},
+                             headers=HEADERS, timeout=25)
         resp.raise_for_status()
-    except requests.exceptions.Timeout:
-        return {"domain": domain, "status": "error", "detail": "Timeout (Orion)"}
     except requests.exceptions.RequestException as e:
-        return {"domain": domain, "status": "error", "detail": f"Orion: {str(e)[:100]}"}
-
-    text = _visible_text(resp.text)
-    blocked_rows = {_norm(m) for m in _ROW_RE.findall(text)}
-
+        return {"domain": domain, "status": "error", "detail": f"Orion: {str(e)[:90]}"}
+    blocked_rows = {_norm(m) for m in _ROW_RE.findall(_visible_text(resp.text))}
     if target in blocked_rows:
-        return {"domain": domain, "status": "blocked",
-                "detail": "Diblokir TrustPositif/Komdigi"}
-    return {"domain": domain, "status": "safe",
-            "detail": "Tidak diblokir"}
+        return {"domain": domain, "status": "blocked", "detail": "Diblokir (Orion)"}
+    return {"domain": domain, "status": "safe", "detail": "Tidak diblokir (Orion)"}
 
 
 # ----------------------------------------------------------------------------
@@ -256,13 +279,32 @@ def main() -> None:
         return
     print(f"Checking {total} domains across {len(groups)} groups...")
 
+    # Build the set of all domains, then resolve blocked status in ONE pass over
+    # the official blocklist mirror. Fall back to per-domain Orion if it's down.
+    all_targets = {_norm(d) for ds in groups.values() for d in ds}
+    blocked_set = None
+    try:
+        blocked_set = fetch_blocked(all_targets)
+    except Exception as e:
+        print(f"[blocklist] unavailable ({e}); falling back to Orion", file=sys.stderr)
+
+    def decide(domain: str) -> dict:
+        if blocked_set is not None:
+            if _norm(domain) in blocked_set:
+                return {"domain": domain, "status": "blocked",
+                        "detail": "Diblokir TrustPositif/Komdigi"}
+            return {"domain": domain, "status": "safe", "detail": "Tidak diblokir"}
+        # fallback path
+        res = check_domain_orion(domain)
+        time.sleep(DELAY_BETWEEN_CHECKS)
+        return res
+
     for group, domains in groups.items():
         results = []
         for d in domains:
-            res = check_domain(d)
+            res = decide(d)
             results.append(res)
             print(f"  [{group}] {res['status']:8} {d} — {res['detail']}")
-            time.sleep(DELAY_BETWEEN_CHECKS)
 
         if ONLY_BLOCKED:
             results = [r for r in results if r["status"] in ("blocked", "error", "unknown")]
