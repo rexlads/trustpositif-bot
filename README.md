@@ -39,20 +39,23 @@ plan). Pages and reliable 10-minute Actions both work best on a public repo, so:
 
 ## How the check works
 
-`check_domain()` queries the **Orion TrustPositif checker**
-(`https://trustcheck.orion.net.id/`, POST field `keyword`). Orion runs from
-inside Indonesia and mirrors the official Komdigi/TrustPositif blocklist.
+**Primary source — official blocklist mirror.** The bot downloads the
+[Skiddle-ID/blocklist](https://github.com/Skiddle-ID/blocklist) shards
+(`domains_001.txt` …), a verbatim mirror of the official Komdigi/TrustPositif
+domain list (~9M entries, auto-updated hourly) served from GitHub's CDN. We test
+**exact membership** of each monitored domain. Verified to match the official
+`trustpositif.komdigi.go.id` results exactly (e.g. `supervegas01.live`).
 
-- Orion returns a table of every domain that *contains* the keyword, each marked
-  `Terblokir`. We match the **exact** queried domain row, so a safe domain is not
-  misreported just because a blocked look-alike exists (e.g. `porngoogle.com`
-  being blocked does not flag `google.com`).
-- The official `trustpositif.komdigi.go.id` site is IP-locked to Indonesia and is
-  **unreachable from GitHub's runners** (verified) — it exposes no API callable
-  from outside Indonesia. Orion is therefore the reliable free path, and every
-  report links to the official site for manual verification.
-- If Orion is unreachable, that domain is reported as ⚠️ (error) rather than
-  guessed.
+- Why a mirror? The official site is IP-locked to Indonesia and unreachable from
+  GitHub's runners; the mirror is reachable from anywhere and is refreshed hourly
+  from the official source.
+- The whole list is scanned in one pass per run, so checking many domains is fast
+  (no per-domain network calls).
+
+**Fallback — Orion.** If the blocklist can't be downloaded, the bot falls back to
+the [Orion checker](https://trustcheck.orion.net.id/) per domain (exact-row
+match). Orion's data can lag, so it is only a safety net. Every report links to
+the official site for manual verification.
 
 ---
 
