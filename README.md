@@ -117,6 +117,26 @@ python checker.py
 
 ---
 
+## Option 3 — Real-time on an Indonesian machine / RDP (`run_local.py`)
+
+The official Komdigi site is reachable only from Indonesian IPs. Running
+`run_local.py` on an **Indonesian RDP/VPS** checks each domain against the
+official site directly, so detection is **real-time** (no 1–4h mirror lag) — the
+same result you get checking manually. It still pulls `domains.json` /
+`mentions.json` from GitHub each cycle, so you keep editing them in the web panel.
+If the official site is unreachable it automatically falls back to the mirror.
+
+On the Windows RDP:
+1. Install Python 3 from python.org (tick **Add Python to PATH**).
+2. Put these files in a folder (download the repo as ZIP, or `git clone`).
+3. Copy `.env.example` to `.env`; fill in `BOT_TOKEN` and `CHANNEL_ID`.
+4. **Confirm the official endpoint:** run `python run_local.py --test` and send
+   the output back so the parser can be locked in.
+5. Run it: double-click **`start-windows.bat`** (or `python run_local.py`). Leave
+   the window open; it loops every `INTERVAL_MINUTES`.
+
+---
+
 ## Report format
 
 One message is sent per group (`Ary`, `AS`, `BD`, `SV`):
