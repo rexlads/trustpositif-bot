@@ -47,6 +47,8 @@ ONLY_BLOCKED = os.environ.get("ONLY_BLOCKED", "0").strip() == "1"
 # The web panel edits domains.json, so it is the primary source of domains.
 GROUPS_FILE  = Path(__file__).with_name("domains.json")
 DOMAINS_FILE = Path(__file__).with_name("domains.txt")  # legacy fallback
+# Per-group Telegram usernames to @mention when a group has a blocked domain.
+MENTIONS_FILE = Path(__file__).with_name("mentions.json")
 
 # Fixed group order so the four Telegram messages always arrive consistently.
 GROUP_ORDER = ["Ary", "AS", "BD", "SV"]
@@ -117,6 +119,38 @@ def load_groups() -> dict:
         return groups
 
     return {"Domain": _legacy_domains()}
+
+
+def load_mentions() -> dict:
+    """
+    Returns {group_name: [usernames]} plus optional "_all" applied to every
+    group. Usernames are normalised to Telegram @handles.
+    """
+    if not MENTIONS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(MENTIONS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    def _handles(items):
+        out = []
+        for u in items or []:
+            u = str(u).strip().lstrip("@")
+            if u:
+                out.append("@" + u)
+        return out
+
+    return {k: _handles(v) for k, v in data.items()}
+
+
+def mentions_for(group: str, mentions: dict) -> str:
+    """Space-joined @handles for a group (its own list + the global _all)."""
+    handles = []
+    for h in mentions.get(group, []) + mentions.get("_all", []):
+        if h not in handles:
+            handles.append(h)
+    return " ".join(handles)
 
 
 def validate_config() -> dict:
@@ -244,8 +278,9 @@ def send_telegram(message: str) -> None:
         print(f"[Telegram send failed] {e}", file=sys.stderr)
 
 
-def build_group_message(group: str, results: list) -> str:
-    """One Telegram message for a single group."""
+def build_group_message(group: str, results: list, mention: str = "") -> str:
+    """One Telegram message for a single group. `mention` is @handles to ping
+    (added only when the group has a blocked domain)."""
     head = html.escape(group)
     lines = [f"<b>🛡️ TrustPositif — {head}</b>", ""]
 
@@ -264,6 +299,9 @@ def build_group_message(group: str, results: list) -> str:
     issues = sum(1 for r in results if r["status"] in ("error", "unknown"))
     lines.append("")
     lines.append(f"🔴 {blocked}  🟢 {safe}  ⚠️ {issues}")
+    # Ping the responsible people only when there is something to act on.
+    if blocked > 0 and mention:
+        lines.append(f"🔔 {mention}")
     lines.append(f"<a href=\"{OFFICIAL_URL}\">Verifikasi manual</a>")
     return "\n".join(lines)
 
@@ -278,6 +316,7 @@ def main() -> None:
         print("No domains configured yet — add some via the panel. Nothing to do.")
         return
     print(f"Checking {total} domains across {len(groups)} groups...")
+    mentions = load_mentions()
 
     # Build the set of all domains, then resolve blocked status in ONE pass over
     # the official blocklist mirror. Fall back to per-domain Orion if it's down.
@@ -314,7 +353,7 @@ def main() -> None:
                 continue
 
         # One message per group (always 4 with the default groups).
-        send_telegram(build_group_message(group, results))
+        send_telegram(build_group_message(group, results, mentions_for(group, mentions)))
         time.sleep(1)  # avoid Telegram rate limits
 
     print("Done.")

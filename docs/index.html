@@ -152,10 +152,13 @@
 const API = "https://api.github.com";
 const WORKFLOW = "check.yml";       // nama file workflow di .github/workflows
 const FILE = "domains.json";
+const MENTIONS_FILE = "mentions.json";
 const BRANCH = "main";
 const GROUPS = ["Ary", "AS", "BD", "SV"];   // urutan & nama grup (juga urutan pesan Telegram)
 let fileSha = null;                 // sha file domains.json saat ini (untuk update)
+let mentionsSha = null;             // sha file mentions.json
 let data = {};                      // { grup: [domain, ...] }
+let mentions = {};                  // { grup: [username, ...] }
 
 // ---------- util ----------
 const $ = (id) => document.getElementById(id);
@@ -178,6 +181,7 @@ function headers() {
 function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
 function b64decode(b64) { return decodeURIComponent(escape(atob(b64))); }
 function emptyData() { const o = {}; GROUPS.forEach(g => o[g] = []); return o; }
+function emptyMentions() { const o = {}; GROUPS.forEach(g => o[g] = []); o["_all"] = []; return o; }
 
 // ---------- config persistence ----------
 function saveConfig() {
@@ -242,6 +246,17 @@ function render() {
     addrow.append(inp, add);
     card.appendChild(addrow);
 
+    // Telegram usernames to tag when this group has a blocked domain.
+    const mlabel = document.createElement("label");
+    mlabel.textContent = "🔔 Tag Telegram saat diblokir (username, pisah koma)";
+    const minp = document.createElement("input");
+    minp.type = "text"; minp.placeholder = "budi, andi";
+    minp.value = (mentions[g] || []).join(", ");
+    minp.oninput = () => {
+      mentions[g] = minp.value.split(",").map(s => s.trim().replace(/^@/, "")).filter(Boolean);
+    };
+    card.append(mlabel, minp);
+
     box.appendChild(card);
   });
 }
@@ -302,6 +317,29 @@ async function loadDomains() {
     const note = c.token ? "" : " (mode baca — isi token untuk menyimpan)";
     setStatus(`Dimuat ${total} domain dari ${GROUPS.length} grup.${note}`, "ok");
   } catch (e) { setStatus("Gagal memuat: " + e.message, "err"); }
+  loadMentions();
+}
+
+// Load the Telegram tag list (public read, no token needed).
+async function loadMentions() {
+  const c = cfg();
+  const h = { "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+  if (c.token) h["Authorization"] = "Bearer " + c.token;
+  try {
+    const url = `${API}/repos/${c.owner}/${c.repo}/contents/${MENTIONS_FILE}?ref=${BRANCH}&_=${Date.now()}`;
+    const r = await fetch(url, { headers: h, cache: "no-store" });
+    if (r.status === 404) { mentionsSha = null; mentions = emptyMentions(); render(); return; }
+    if (!r.ok) return;
+    const j = await r.json();
+    mentionsSha = j.sha;
+    let parsed = {};
+    try { parsed = JSON.parse(b64decode(j.content)) || {}; } catch (e) { parsed = {}; }
+    mentions = emptyMentions();
+    Object.keys(parsed).forEach(g => {
+      mentions[g] = (parsed[g] || []).map(x => String(x).trim().replace(/^@/, "")).filter(Boolean);
+    });
+    render();
+  } catch (e) { /* diam-diam */ }
 }
 
 async function saveDomains() {
@@ -322,8 +360,19 @@ async function saveDomains() {
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
     const j = await r.json();
     fileSha = j.content.sha;
+    // Also save the Telegram tag list.
+    const mout = {};
+    GROUPS.forEach(g => mout[g] = mentions[g] || []);
+    mout["_all"] = mentions["_all"] || [];
+    const mbody = { message: "panel: update mentions.json",
+                    content: b64encode(JSON.stringify(mout, null, 2) + "\n"), branch: BRANCH };
+    if (mentionsSha) mbody.sha = mentionsSha;
+    const rm = await fetch(`${API}/repos/${c.owner}/${c.repo}/contents/${MENTIONS_FILE}`, {
+      method: "PUT", headers: headers(), body: JSON.stringify(mbody),
+    });
+    if (rm.ok) { mentionsSha = (await rm.json()).content.sha; }
     const total = GROUPS.reduce((n, g) => n + out[g].length, 0);
-    setStatus(`✓ Tersimpan ${total} domain. Run berikutnya pakai daftar ini.`, "ok");
+    setStatus(`✓ Tersimpan ${total} domain + tag Telegram. Run berikutnya pakai ini.`, "ok");
   } catch (e) { setStatus("Gagal menyimpan: " + e.message, "err"); }
   finally { $("saveBtn").disabled = false; }
 }
@@ -370,8 +419,9 @@ async function loadRuns() {
 // ---------- init ----------
 restoreConfig();
 data = emptyData();
+mentions = emptyMentions();
 render();
-// Always load the list (public read — no token needed). Runs need a token.
+// Always load the list + tags (public read — no token needed). Runs need a token.
 loadDomains();
 if (cfg().token) loadRuns();
 </script>
