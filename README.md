@@ -123,15 +123,26 @@ One message is sent per group (`Ary`, `AS`, `BD`, `SV`):
 
 ```
 🛡️ TrustPositif — Ary
-🔴 baddomain.com — Appears on the blocklist
-🟢 gooddomain.com — Not on the blocklist
+🔴 baddomain.com — Diblokir TrustPositif/Komdigi
+🟢 gooddomain.com — Tidak diblokir
 
-🔴 1  🟢 1  ⚠️ 0
+🔴 1  🟢 0  ⚠️ 0
+🔔 @budi @andi
 ```
 
 - Domains and their groups are stored in `domains.json` and edited via the panel.
+- **Telegram mentions:** `mentions.json` holds usernames per group (edited in the
+  panel). When a group has a blocked domain, those users are @mentioned so they
+  get pinged. `"_all"` is mentioned for every group. (The user must be a member of
+  the channel and have a public @username for the ping to notify them.)
 - `ONLY_BLOCKED=1` reports only blocked/problem domains; a group with nothing to
   report sends a short "Semua aman" message instead.
+
+### Note on freshness
+
+The blocklist mirror refreshes roughly every 1–4 hours, so a newly-blocked domain
+can take that long to show up here — the only real-time source is the official
+site, which is IP-locked to Indonesia and can't be queried from GitHub's runners.
 
 ---
 
