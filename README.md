@@ -117,23 +117,28 @@ python checker.py
 
 ---
 
-## Option 3 — Real-time on an Indonesian machine / RDP (`run_local.py`)
+## Option 3 — Real-time on an Indonesian machine / RDP (no Python)
 
-The official Komdigi site is reachable only from Indonesian IPs. Running
-`run_local.py` on an **Indonesian RDP/VPS** checks each domain against the
-official site directly, so detection is **real-time** (no 1–4h mirror lag) — the
-same result you get checking manually. It still pulls `domains.json` /
-`mentions.json` from GitHub each cycle, so you keep editing them in the web panel.
-If the official site is unreachable it automatically falls back to the mirror.
+The official Komdigi site is reachable only from Indonesian IPs. Running the bot
+on an **Indonesian Windows RDP/VPS** checks each domain against the official site
+directly, so detection is **real-time** (no 1–4h mirror lag) — the same result
+you get checking manually. It still pulls `domains.json` / `mentions.json` from
+GitHub each cycle, so you keep editing them in the web panel.
+
+**`run_local.ps1` uses built-in PowerShell — no Python install needed.** It
+self-calibrates: on startup it finds whichever method actually works from the
+machine (official API, or ISP block-page interception), and falls back to the
+GitHub mirror if none do.
 
 On the Windows RDP:
-1. Install Python 3 from python.org (tick **Add Python to PATH**).
-2. Put these files in a folder (download the repo as ZIP, or `git clone`).
-3. Copy `.env.example` to `.env`; fill in `BOT_TOKEN` and `CHANNEL_ID`.
-4. **Confirm the official endpoint:** run `python run_local.py --test` and send
-   the output back so the parser can be locked in.
-5. Run it: double-click **`start-windows.bat`** (or `python run_local.py`). Leave
-   the window open; it loops every `INTERVAL_MINUTES`.
+1. Download the repo as ZIP (green **Code → Download ZIP**) and extract.
+2. Copy `.env.example` to `.env`; fill in `BOT_TOKEN` and `CHANNEL_ID`.
+3. Double-click **`test-windows.bat`** once and send back the output (confirms
+   which method works from your IP).
+4. Double-click **`start-windows.bat`** to run. Leave the window open; it loops
+   every `INTERVAL_MINUTES`.
+
+(`run_local.py` is the equivalent Python version if you prefer Python.)
 
 ---
 
