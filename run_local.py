@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-REAL-TIME runner — run this on an Indonesian machine/RDP.
+REAL-TIME runner for an Indonesian machine/RDP — self-calibrating.
 
-From an Indonesian IP the official Komdigi site (trustpositif.komdigi.go.id) is
-reachable, so we can check each domain against it directly and get the SAME,
-instant result you see when you check manually — no ~1-4h mirror lag.
+From an Indonesian IP we can see Komdigi/TrustPositif blocks in real-time. But
+the exact "how" varies (official API shape, or ISP block-page interception), so
+this script DISCOVERS the working method on startup instead of hard-coding one:
 
-What it does every INTERVAL_MINUTES:
-  1. Pulls the latest domains.json + mentions.json from your GitHub repo
-     (so you keep editing them from the web panel — nothing changes there).
-  2. Checks every domain against the official site (falls back to the GitHub
-     blocklist mirror if the official site can't be reached).
-  3. Sends one Telegram message per group, @mentioning people on blocks.
+  1. It calibrates using domains that are certainly blocked (pornhub.com, ...)
+     vs certainly safe (google.com), trying each method until one cleanly tells
+     them apart:
+        a) official API endpoints (several candidate URLs)
+        b) ISP block-page interception (HTTP GET → "internetpositif" page)
+  2. Whatever wins is used for all your domains.
+  3. If NOTHING works from this machine, it falls back to the GitHub blocklist
+     mirror (accurate but ~1h behind) so you're never left blind.
 
-Setup (Windows RDP):
-  1) Install Python 3 from python.org (tick "Add Python to PATH").
-  2) In this folder run:  pip install requests python-dotenv
-  3) Copy .env.example to .env and fill in BOT_TOKEN, CHANNEL_ID.
-  4) FIRST verify the official endpoint:  python run_local.py --test
-     Paste the printed output back to me so I can lock in the parser.
-  5) Run for real:  python run_local.py     (leave it running; Ctrl+C to stop)
+It pulls domains.json / mentions.json from GitHub each cycle, so you keep
+editing them in the web panel.
+
+Usage:
+  python run_local.py --test     # show what each method sees (send me this)
+  python run_local.py            # run forever, every INTERVAL_MINUTES
 """
 
 import os
@@ -36,131 +37,170 @@ except ImportError:
     pass
 
 import requests
+import checker  # reads BOT_TOKEN/CHANNEL_ID from env at import (loaded above)
 
-# checker.py reads BOT_TOKEN/CHANNEL_ID from the environment at import time, so
-# load .env BEFORE importing it (done above).
-import checker
-
-# ---------------------------------------------------------------------------
-# Config
 # ---------------------------------------------------------------------------
 GH_OWNER = os.environ.get("GH_OWNER", "rexlads").strip()
 GH_REPO = os.environ.get("GH_REPO", "trustpositif-bot").strip()
 GH_BRANCH = os.environ.get("GH_BRANCH", "main").strip()
 INTERVAL_MINUTES = int(os.environ.get("INTERVAL_MINUTES", "10"))
-
-# Official checker endpoint. {domain} is substituted. Confirmed/adjusted after
-# the --test run on the Indonesian machine.
-OFFICIAL_CHECK_URL = os.environ.get(
-    "OFFICIAL_CHECK_URL",
-    "https://trustpositif.komdigi.go.id/api/cek?url={domain}",
-)
-
 RAW = "https://raw.githubusercontent.com/{o}/{r}/{b}/{f}"
 
-# Response markers. "not blocked" is checked first (it often contains "blocked").
-SAFE_MARKERS = ["tidak ada", "tidak diblokir", "tidak terblokir", "not blocked",
-                "\"blocked\":false", "\"blocked\": false", "aman", "normal"]
-BLOCKED_MARKERS = ["diblokir", "terblokir", "\"blocked\":true", "\"blocked\": true",
-                   "blocked", "trustpositif", "internetpositif"]
+# Calibration anchors: long-blocked in Indonesia vs certainly reachable.
+KNOWN_BLOCKED = ["pornhub.com", "xnxx.com", "xvideos.com", "bet365.com"]
+KNOWN_SAFE = "google.com"
+
+# Candidate official endpoints ({domain} substituted).
+OFFICIAL_CANDIDATES = [
+    "https://trustpositif.komdigi.go.id/api/cek?url={domain}",
+    "https://trustpositif.komdigi.go.id/Rest_server/getRecordDomain?domain={domain}",
+    "https://trustpositif.komdigi.go.id/rest_server/getrecordlist?search={domain}",
+]
+# Extra endpoint from OFFICIAL_CHECK_URL env, tried first if given.
+if os.environ.get("OFFICIAL_CHECK_URL"):
+    OFFICIAL_CANDIDATES.insert(0, os.environ["OFFICIAL_CHECK_URL"].strip())
+
+BLOCK_MARKERS = ["internetpositif", "internet positif", "trustpositif",
+                 "trust positif", "aduankonten", "komdigi", "diblokir",
+                 "terblokir", "positif.go.id", "\"blocked\":true", "\"blocked\": true"]
+SAFE_JSON = ["\"blocked\":false", "\"blocked\": false", "tidak ada", "tidak diblokir"]
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
 # ---------------------------------------------------------------------------
-# Pull config from GitHub so the web panel stays the source of truth
+# Detection methods. Each returns True (blocked) / False (safe) / None (unknown)
+# ---------------------------------------------------------------------------
+def _interpret_official(body: str):
+    text = body.lower()
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            for k in ("blocked", "isblocked", "is_blocked", "block", "status"):
+                if k in data:
+                    v = data[k]
+                    if isinstance(v, bool):
+                        return v
+                    if isinstance(v, str):
+                        s = v.strip().lower()
+                        if s in ("ada", "blocked", "true", "1", "diblokir"):
+                            return True
+                        if s in ("tidak ada", "not blocked", "false", "0", "aman"):
+                            return False
+    except Exception:
+        pass
+    if any(m in text for m in SAFE_JSON):
+        return False
+    if any(m in text for m in BLOCK_MARKERS):
+        return True
+    if len(text) < 400 and re.search(r"\bada\b", text):
+        return True
+    if len(text) < 400 and "aman" in text:
+        return False
+    return None
+
+
+def make_official(url_tmpl):
+    def fn(domain):
+        url = url_tmpl.format(domain=quote(checker._norm(domain)))
+        r = requests.get(url, headers={"User-Agent": UA, "Accept": "*/*"}, timeout=20)
+        if r.status_code != 200:
+            return None
+        return _interpret_official(r.text)
+    return fn
+
+
+def http_blockpage(domain):
+    """Indonesian ISPs redirect blocked domains to an 'internet positif' page."""
+    try:
+        r = requests.get("http://" + checker._norm(domain) + "/",
+                         headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
+    except requests.exceptions.RequestException:
+        return None
+    blob = (r.url + " " + r.text[:4000]).lower()
+    if any(m in blob for m in BLOCK_MARKERS):
+        return True
+    return False
+
+
+METHODS = [("official:" + u, make_official(u)) for u in OFFICIAL_CANDIDATES]
+METHODS.append(("http-blockpage", http_blockpage))
+
+
+def calibrate():
+    """Return (name, fn) of the first method that cleanly separates a known
+    blocked domain (True) from a known safe domain (False). Else (None, None)."""
+    for name, fn in METHODS:
+        try:
+            if fn(KNOWN_SAFE) is not False:
+                continue
+            for kb in KNOWN_BLOCKED:
+                if fn(kb) is True:
+                    return name, fn
+        except Exception:
+            continue
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 def pull_config() -> None:
     for fname, path in (("domains.json", checker.GROUPS_FILE),
                         ("mentions.json", checker.MENTIONS_FILE)):
         try:
             url = RAW.format(o=GH_OWNER, r=GH_REPO, b=GH_BRANCH, f=fname)
-            resp = requests.get(url, headers=checker.HEADERS, timeout=30,
-                                params={"_": int(time.time())})
+            resp = requests.get(url, timeout=30, params={"_": int(time.time())})
             if resp.status_code == 200 and resp.text.strip():
-                json.loads(resp.text)  # validate
+                json.loads(resp.text)
                 path.write_text(resp.text, encoding="utf-8")
         except Exception as e:
             print(f"[pull] {fname}: {str(e)[:100]}", file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
-# Official-site check
-# ---------------------------------------------------------------------------
-def interpret(body: str):
-    """Return True (blocked) / False (safe) / None (undecidable)."""
-    text = body.lower()
-    # JSON with an explicit boolean wins.
-    try:
-        data = json.loads(body)
-        for key in ("blocked", "isblocked", "is_blocked", "block"):
-            if isinstance(data, dict) and key in data and isinstance(data[key], bool):
-                return data[key]
-    except Exception:
-        pass
-    if any(m in text for m in SAFE_MARKERS):
-        return False
-    if any(m in text for m in BLOCKED_MARKERS):
-        return True
-    # Official site wording is "Ada" (blocked) / "Tidak Ada" (safe). "Tidak Ada"
-    # was already caught above, so a standalone "ada" here means blocked. Only
-    # trust this on short API-style bodies to avoid matching words in HTML.
-    if len(text) < 400 and re.search(r"\bada\b", text):
-        return True
-    return None
-
-
-def check_official(domain: str) -> dict:
-    url = OFFICIAL_CHECK_URL.format(domain=quote(checker._norm(domain)))
-    try:
-        r = requests.get(url, headers=checker.HEADERS, timeout=25)
-        r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        return {"domain": domain, "status": "error", "detail": f"Resmi: {str(e)[:80]}"}
-    verdict = interpret(r.text)
-    if verdict is True:
-        return {"domain": domain, "status": "blocked", "detail": "Diblokir (resmi Komdigi)"}
-    if verdict is False:
-        return {"domain": domain, "status": "safe", "detail": "Tidak diblokir (resmi)"}
-    return {"domain": domain, "status": "error", "detail": "Respons resmi tak terbaca"}
-
-
-def official_reachable() -> bool:
-    """Quick probe so we can fall back to the mirror if the site is unreachable."""
-    r = check_official("google.com")
-    return r["status"] != "error"
-
-
-# ---------------------------------------------------------------------------
-# One check cycle
-# ---------------------------------------------------------------------------
 def run_once() -> None:
     pull_config()
     groups = checker.load_groups()
     mentions = checker.load_mentions()
-    total = sum(len(v) for v in groups.values())
-    if total == 0:
+    if sum(len(v) for v in groups.values()) == 0:
         print("No domains yet — add some in the panel.")
         return
 
-    use_official = official_reachable()
-    if use_official:
-        print("Source: OFFICIAL komdigi.go.id (real-time)")
-        decide = check_official
+    name, fn = calibrate()
+    mirror_set = None
+    if fn is not None:
+        print(f"Source: REAL-TIME via [{name}]")
     else:
-        print("Source: blocklist MIRROR (official site unreachable from here)")
-        blocked_set = None
+        print("Source: MIRROR (no real-time method worked from this machine)")
         try:
-            blocked_set = checker.fetch_blocked({checker._norm(d)
-                                                 for ds in groups.values() for d in ds})
+            mirror_set = checker.fetch_blocked({checker._norm(d)
+                                                for ds in groups.values() for d in ds})
         except Exception as e:
             print(f"[mirror] {e}", file=sys.stderr)
 
-        def decide(domain):
-            if blocked_set is None:
-                return {"domain": domain, "status": "error", "detail": "Sumber tak tersedia"}
-            blk = checker._norm(domain) in blocked_set
-            return {"domain": domain,
-                    "status": "blocked" if blk else "safe",
-                    "detail": "Diblokir (mirror)" if blk else "Tidak diblokir (mirror)"}
+    def in_mirror(domain):
+        nonlocal mirror_set
+        if mirror_set is None:
+            try:
+                mirror_set = checker.fetch_blocked({checker._norm(d)
+                                                    for ds in groups.values() for d in ds})
+            except Exception:
+                mirror_set = set()
+        return checker._norm(domain) in mirror_set
+
+    def decide(domain):
+        verdict = None
+        if fn is not None:
+            try:
+                verdict = fn(domain)
+            except Exception:
+                verdict = None
+        if verdict is None:                 # real-time inconclusive → mirror
+            verdict = in_mirror(domain)
+            src = "mirror"
+        else:
+            src = "resmi"
+        return {"domain": domain,
+                "status": "blocked" if verdict else "safe",
+                "detail": ("Diblokir" if verdict else "Tidak diblokir") + f" ({src})"}
 
     for group, domains in groups.items():
         results = []
@@ -168,13 +208,12 @@ def run_once() -> None:
             res = decide(d)
             results.append(res)
             print(f"  [{group}] {res['status']:8} {d} — {res['detail']}")
-            if use_official:
-                time.sleep(1.0)  # be polite to the official site
+            if fn is not None:
+                time.sleep(0.7)   # be polite to the upstream
         if checker.ONLY_BLOCKED:
-            results = [r for r in results if r["status"] in ("blocked", "error")]
+            results = [r for r in results if r["status"] == "blocked"]
             if not results:
-                checker.send_telegram(
-                    f"<b>🛡️ TrustPositif — {group}</b>\n🟢 Semua aman.")
+                checker.send_telegram(f"<b>🛡️ TrustPositif — {group}</b>\n🟢 Semua aman.")
                 time.sleep(1)
                 continue
         checker.send_telegram(
@@ -182,29 +221,23 @@ def run_once() -> None:
         time.sleep(1)
 
 
-# ---------------------------------------------------------------------------
-# --test : dump raw official responses so the parser can be finalized
-# ---------------------------------------------------------------------------
 def selftest() -> None:
-    print("Probing the official endpoint from this machine's IP...\n")
-    for dom in ("google.com", "pornhub.com", "bet365.com"):
-        url = OFFICIAL_CHECK_URL.format(domain=quote(dom))
-        print("=" * 60)
-        print(f"GET {url}")
+    print("Calibrating from this machine's IP...\n")
+    print(f"KNOWN_SAFE  google.com")
+    for name, fn in METHODS:
         try:
-            r = requests.get(url, headers=checker.HEADERS, timeout=25)
-            print(f"  HTTP {r.status_code}  content-type={r.headers.get('content-type','')}")
-            print(f"  body: {r.text[:600]}")
-            print(f"  -> interpret(): {interpret(r.text)}")
+            s = fn(KNOWN_SAFE)
+            b = {kb: fn(kb) for kb in KNOWN_BLOCKED[:2]}
+            print(f"  [{name}]  safe={s}  blocked_probe={b}")
         except Exception as e:
-            print(f"  ERROR {type(e).__name__}: {str(e)[:160]}")
-    print("\nCopy everything above and send it back to finalize the parser.")
+            print(f"  [{name}]  ERROR {type(e).__name__}: {str(e)[:100]}")
+    name, fn = calibrate()
+    print(f"\nChosen method: {name or 'NONE (will use mirror)'}")
 
 
 if __name__ == "__main__":
     if not checker.BOT_TOKEN or not checker.CHANNEL_ID:
-        print("Set BOT_TOKEN and CHANNEL_ID (in .env or environment) first.",
-              file=sys.stderr)
+        print("Set BOT_TOKEN and CHANNEL_ID (in .env) first.", file=sys.stderr)
         sys.exit(1)
     if "--test" in sys.argv:
         selftest()
